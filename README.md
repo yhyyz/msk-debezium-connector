@@ -285,7 +285,7 @@ python verify_connector.py -v --max-messages 20
 | `--mysql-port` | ❌ | 3306 | MySQL 端口 |
 | `--server-id` | ❌ | 随机生成 | MySQL 复制 Server ID |
 | `--schema-history-topic` | ❌ | `{prefix}_schema_history` | Schema 历史 Topic 名称 |
-| `--plugin-url` | ❌ | Debezium 3.4.0 | 插件下载地址 |
+| `--plugin-url` | ❌ | [Debezium 3.4.0.Final](https://repo1.maven.org/maven2/io/debezium/debezium-connector-mysql/3.4.0.Final/debezium-connector-mysql-3.4.0.Final-plugin.zip) | 插件下载地址 |
 | `--kafka-connect-version` | ❌ | 3.7.x | Kafka Connect 版本 |
 | `--mcu-count` | ❌ | 1 | 每个 Worker 的 MCU 数量 |
 | `--worker-count` | ❌ | 1 | Worker 数量 |
