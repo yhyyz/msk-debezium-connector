@@ -94,8 +94,6 @@ flowchart TD
 | 8.0.x | ✅ | 完全支持 |
 | 8.4+ | ⚠️ | Debezium 3.4 已兼容，但需注意 `SHOW MASTER STATUS` 已改为 `SHOW BINARY LOG STATUS` |
 
-> 💡 **推荐**: MySQL 8.0.x（稳定性最佳）
-
 **Binlog 配置**:
 
 ```sql
