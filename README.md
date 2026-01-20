@@ -244,32 +244,69 @@ python verify_connector.py -v --max-messages 20
 | `--bootstrap-servers` | - | Kafka bootstrap servers |
 | `--topic-prefix` | - | Topic 前缀 |
 | `--data-topic` | `{prefix}_all_data` | 数据 Topic 名称 |
-| `--max-messages` | 10 | 最多读取的消息数量 |
+| `--max-messages` | 100 | 最多读取的消息数量 |
 | `--skip-mysql` | - | 跳过 MySQL 操作 |
 | `--skip-insert` | - | 跳过插入数据 |
 | `--skip-update` | - | 跳过更新数据 |
 | `--skip-delete` | - | 跳过删除数据 |
-| `--wait` | 3 | MySQL 操作后等待秒数 |
-| `-v, --verbose` | - | 详细输出（包含完整 JSON） |
+| `--wait` | 5 | MySQL 操作后等待秒数 |
+| `-v, --verbose` | - | 详细输出（包含所有 CDC 事件） |
 
 ### 输出示例
 
 ```
-11:47:52 │ INFO    │ ============================================================
-11:47:52 │ INFO    │ MSK Debezium Connector 验证
-11:47:52 │ INFO    │ ============================================================
-11:47:52 │ INFO    │ MySQL: my-db.rds.amazonaws.com:3306
-11:47:52 │ INFO    │ Database: test_db, Table: verify_test
-11:47:52 │ INFO    │ Kafka: broker1:9092
-11:47:52 │ INFO    │ Topic: myprefix_all_data
-...
-11:47:55 │ INFO    │ 消息 #1
-11:47:55 │ INFO    │ ────────────────────────────────────────────────────────
-11:47:55 │ INFO    │ Partition: 0, Offset: 0
-11:47:55 │ INFO    │ 解析摘要:
-11:47:55 │ INFO    │   操作类型: INSERT (c)
-11:47:55 │ INFO    │   After: {"id": 1, "name": "User_A", "email": "user_a@test.com"}
-11:47:55 │ INFO    │   Source: db=test_db, table=verify_test
+╭────────────────────────────────────────────────────────────╮
+│  MSK Debezium Connector 验证                               │
+╰────────────────────────────────────────────────────────────╯
+
+  MySQL   my-db.rds.amazonaws.com:3306
+  DB      test_db → verify_test
+  Kafka   broker1:9092
+  Topic   myprefix_all_data
+
+[1/8] 创建数据库和表
+      ✓ 数据库 'test_db'
+      ✓ 表 'verify_test'
+
+[2/8] 插入测试数据
+      + id=1    User_A_122108      user_a_122108@test.com         active
+      + id=2    User_B_122108      user_b_122108@test.com         active
+      + id=3    User_C_122108      user_c_122108@test.com         pending
+
+[3/8] 更新测试数据
+      ~ id=3    email: user_c_122108@test.com → updated_3@test.com
+
+[4/8] 删除测试数据
+      ⚠ 没有符合条件的记录
+
+[5/8] 当前表数据
+      ID     Name               Email                          Status
+      3      User_C_122108      updated_3@test.com             updated
+      2      User_B_122108      user_b_122108@test.com         active
+      1      User_A_122108      user_a_122108@test.com         active
+
+[6/8] Kafka Topics
+      • myprefix_all_data
+      • myprefix_schema_history
+
+[7/8] CDC 事件验证
+      ◆ INSERT  id=1    User_A_122108
+      ◆ INSERT  id=2    User_B_122108
+      ◆ INSERT  id=3    User_C_122108
+      ◆ UPDATE  id=3    email → updated_3@test.com
+
+[8/8] 验证结果
+      ┌──────────┬────────┬────────┬──────────┐
+      │ 操作     │ 执行   │ 匹配   │ 状态     │
+      ├──────────┼────────┼────────┼──────────┤
+      │ INSERT   │ 3      │ 3      │ ✓ PASS   │
+      │ UPDATE   │ 1      │ 1      │ ✓ PASS   │
+      └──────────┴────────┴────────┴──────────┘
+
+      总计: 4/4 全部匹配 ✓
+
+──────────────────────────────────────────────────────────────
+  完成于 12:25:07  耗时 20.1s
 ```
 
 ## 参数说明
