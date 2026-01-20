@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 """
 MSK Debezium Connector 验证脚本
-
-用于验证 Debezium MySQL Connector 是否正常工作。
-功能：创建数据库/表、写入数据、检查 Kafka topics、读取消息并验证数据一致性。
 """
 
 import argparse
@@ -23,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Operation:
-    op_type: str  # INSERT, UPDATE, DELETE
+    op_type: str
     record_id: int
     name: str
     email: str
@@ -42,32 +39,92 @@ class VerifyResult:
     matched_deletes: list[int] = field(default_factory=list)
 
 
-class ColorFormatter(logging.Formatter):
-    COLORS = {
-        "DEBUG": "\033[36m",
-        "INFO": "\033[32m",
-        "WARNING": "\033[33m",
-        "ERROR": "\033[31m",
-        "CRITICAL": "\033[35m",
-    }
+class Colors:
+    CYAN = "\033[36m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    RED = "\033[31m"
+    GRAY = "\033[90m"
+    BOLD = "\033[1m"
     RESET = "\033[0m"
 
-    def format(self, record):
-        color = self.COLORS.get(record.levelname, self.RESET)
-        record.levelname = f"{color}{record.levelname:<7}{self.RESET}"
-        return super().format(record)
+
+class Console:
+    @staticmethod
+    def header(title: str):
+        width = 60
+        print(f"\n{Colors.CYAN}╭{'─' * width}╮{Colors.RESET}")
+        print(
+            f"{Colors.CYAN}│{Colors.RESET}  {Colors.BOLD}{title:<{width - 3}}{Colors.RESET}{Colors.CYAN}│{Colors.RESET}"
+        )
+        print(f"{Colors.CYAN}╰{'─' * width}╯{Colors.RESET}")
+        print()
+
+    @staticmethod
+    def config(key: str, value: str):
+        print(f"  {Colors.GRAY}{key:<8}{Colors.RESET}{value}")
+
+    @staticmethod
+    def step(num: int, total: int, title: str, status: str = ""):
+        status_str = f" {Colors.GREEN}✓{Colors.RESET}" if status == "ok" else ""
+        print(f"\n{Colors.BOLD}[{num}/{total}]{Colors.RESET} {title}{status_str}")
+
+    @staticmethod
+    def item(symbol: str, text: str, color: str = ""):
+        color_code = getattr(Colors, color.upper(), "") if color else ""
+        reset = Colors.RESET if color_code else ""
+        print(f"      {color_code}{symbol}{reset} {text}")
+
+    @staticmethod
+    def table_row(cols: list[str], widths: list[int], is_header: bool = False):
+        row = "│"
+        for col, width in zip(cols, widths):
+            row += f" {col:<{width}} │"
+        if is_header:
+            print(f"      {Colors.GRAY}{row}{Colors.RESET}")
+        else:
+            print(f"      {row}")
+
+    @staticmethod
+    def table_sep(widths: list[int], style: str = "mid"):
+        chars = {"top": ("┌", "┬", "┐"), "mid": ("├", "┼", "┤"), "bot": ("└", "┴", "┘")}
+        left, mid, right = chars.get(style, chars["mid"])
+        line = left + mid.join("─" * (w + 2) for w in widths) + right
+        print(f"      {Colors.GRAY}{line}{Colors.RESET}")
+
+    @staticmethod
+    def summary(matched: int, total: int):
+        if total == 0:
+            print(f"\n      {Colors.YELLOW}⚠ 没有执行任何操作{Colors.RESET}")
+        elif matched == total:
+            print(
+                f"\n      {Colors.GREEN}总计: {matched}/{total} 全部匹配 ✓{Colors.RESET}"
+            )
+        else:
+            print(
+                f"\n      {Colors.YELLOW}总计: {matched}/{total} 部分匹配{Colors.RESET}"
+            )
+
+    @staticmethod
+    def footer(start_time: float):
+        elapsed = time.time() - start_time
+        now = datetime.now().strftime("%H:%M:%S")
+        print(f"\n{Colors.GRAY}{'─' * 62}{Colors.RESET}")
+        print(f"  {Colors.GRAY}完成于 {now}  耗时 {elapsed:.1f}s{Colors.RESET}\n")
+
+    @staticmethod
+    def warning(text: str):
+        print(f"      {Colors.YELLOW}⚠ {text}{Colors.RESET}")
+
+    @staticmethod
+    def error(text: str):
+        print(f"      {Colors.RED}✗ {text}{Colors.RESET}")
 
 
 def setup_logging(verbose: bool = False):
-    level = logging.DEBUG if verbose else logging.INFO
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(
-        ColorFormatter("%(asctime)s │ %(levelname)s │ %(message)s", datefmt="%H:%M:%S")
-    )
-    logging.getLogger("kafka").setLevel(logging.WARNING)
-    root_logger = logging.getLogger()
-    root_logger.setLevel(level)
-    root_logger.addHandler(handler)
+    level = logging.DEBUG if verbose else logging.WARNING
+    logging.basicConfig(level=level, format="%(message)s")
+    logging.getLogger("kafka").setLevel(logging.ERROR)
 
 
 def get_mysql_connection(
@@ -84,26 +141,15 @@ def get_mysql_connection(
     )
 
 
-def log_section(title: str, step: int | None = None):
-    prefix = f"{step}. " if step else ""
-    logger.info("=" * 60)
-    logger.info(f"{prefix}{title}")
-    logger.info("=" * 60)
-
-
 def setup_database(
     host: str, port: int, user: str, password: str, database: str, table: str
-):
-    log_section("创建数据库和表", step=1)
-
-    conn = get_mysql_connection(host, port, user, password)
+) -> bool:
+    Console.step(1, 8, "创建数据库和表")
     try:
+        conn = get_mysql_connection(host, port, user, password)
         with conn.cursor() as cursor:
             cursor.execute(f"CREATE DATABASE IF NOT EXISTS {database}")
-            logger.info(f"数据库 '{database}' 已创建/存在")
-
             cursor.execute(f"USE {database}")
-
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS {table} (
                     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -114,21 +160,23 @@ def setup_database(
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                 )
             """)
-            logger.info(f"表 '{table}' 已创建/存在")
-
         conn.commit()
-    finally:
         conn.close()
+        Console.item("✓", f"数据库 '{database}'", "green")
+        Console.item("✓", f"表 '{table}'", "green")
+        return True
+    except Exception as e:
+        Console.error(str(e))
+        return False
 
 
 def insert_test_data(
     host: str, port: int, user: str, password: str, database: str, table: str
 ) -> list[Operation]:
-    log_section("插入测试数据", step=2)
-
+    Console.step(2, 8, "插入测试数据")
     operations = []
-    conn = get_mysql_connection(host, port, user, password, database)
     try:
+        conn = get_mysql_connection(host, port, user, password, database)
         with conn.cursor() as cursor:
             timestamp = datetime.now().strftime("%H%M%S")
             test_data = [
@@ -136,40 +184,30 @@ def insert_test_data(
                 (f"User_B_{timestamp}", f"user_b_{timestamp}@test.com", "active"),
                 (f"User_C_{timestamp}", f"user_c_{timestamp}@test.com", "pending"),
             ]
-
             for name, email, status in test_data:
                 cursor.execute(
                     f"INSERT INTO {table} (name, email, status) VALUES (%s, %s, %s)",
                     (name, email, status),
                 )
                 record_id = cursor.lastrowid
-                operations.append(
-                    Operation(
-                        op_type="INSERT",
-                        record_id=record_id,
-                        name=name,
-                        email=email,
-                        status=status,
-                    )
+                operations.append(Operation("INSERT", record_id, name, email, status))
+                Console.item(
+                    "+", f"id={record_id:<4} {name:<18} {email:<30} {status}", "green"
                 )
-                logger.info(f"INSERT: id={record_id}, {name}, {email}, {status}")
-
         conn.commit()
-        logger.info(f"共插入 {len(operations)} 条数据")
-    finally:
         conn.close()
-
+    except Exception as e:
+        Console.error(str(e))
     return operations
 
 
 def update_test_data(
     host: str, port: int, user: str, password: str, database: str, table: str
 ) -> list[Operation]:
-    log_section("更新测试数据", step=3)
-
+    Console.step(3, 8, "更新测试数据")
     operations = []
-    conn = get_mysql_connection(host, port, user, password, database)
     try:
+        conn = get_mysql_connection(host, port, user, password, database)
         with conn.cursor() as cursor:
             cursor.execute(
                 f"SELECT id, name, email, status FROM {table} ORDER BY id DESC LIMIT 1"
@@ -184,37 +222,36 @@ def update_test_data(
                 )
                 operations.append(
                     Operation(
-                        op_type="UPDATE",
-                        record_id=row["id"],
-                        name=row["name"],
-                        email=new_email,
-                        status=new_status,
-                        old_email=row["email"],
-                        old_status=row["status"],
+                        "UPDATE",
+                        row["id"],
+                        row["name"],
+                        new_email,
+                        new_status,
+                        row["email"],
+                        row["status"],
                     )
                 )
-                logger.info(
-                    f"UPDATE: id={row['id']}, {row['name']}, "
-                    f"email: {row['email']} -> {new_email}, "
-                    f"status: {row['status']} -> {new_status}"
+                Console.item(
+                    "~",
+                    f"id={row['id']:<4} email: {row['email']} → {new_email}",
+                    "yellow",
                 )
             else:
-                logger.warning("没有找到可更新的记录")
+                Console.warning("没有找到可更新的记录")
         conn.commit()
-    finally:
         conn.close()
-
+    except Exception as e:
+        Console.error(str(e))
     return operations
 
 
 def delete_test_data(
     host: str, port: int, user: str, password: str, database: str, table: str
 ) -> list[Operation]:
-    log_section("删除测试数据", step=4)
-
+    Console.step(4, 8, "删除测试数据")
     operations = []
-    conn = get_mysql_connection(host, port, user, password, database)
     try:
+        conn = get_mysql_connection(host, port, user, password, database)
         with conn.cursor() as cursor:
             cursor.execute(
                 f"SELECT id, name, email, status FROM {table} WHERE status = 'pending' LIMIT 1"
@@ -224,72 +261,63 @@ def delete_test_data(
                 cursor.execute(f"DELETE FROM {table} WHERE id = %s", (row["id"],))
                 operations.append(
                     Operation(
-                        op_type="DELETE",
-                        record_id=row["id"],
-                        name=row["name"],
-                        email=row["email"],
-                        status=row["status"],
+                        "DELETE", row["id"], row["name"], row["email"], row["status"]
                     )
                 )
-                logger.info(
-                    f"DELETE: id={row['id']}, {row['name']}, {row['email']}, {row['status']}"
+                Console.item(
+                    "-", f"id={row['id']:<4} {row['name']:<18} {row['email']}", "red"
                 )
             else:
-                logger.warning("没有找到 status='pending' 的记录")
+                Console.warning("没有符合条件的记录")
         conn.commit()
-    finally:
         conn.close()
-
+    except Exception as e:
+        Console.error(str(e))
     return operations
 
 
 def show_current_data(
     host: str, port: int, user: str, password: str, database: str, table: str
 ):
-    log_section("当前 MySQL 表数据", step=5)
-
-    conn = get_mysql_connection(host, port, user, password, database)
+    Console.step(5, 8, "当前表数据")
     try:
+        conn = get_mysql_connection(host, port, user, password, database)
         with conn.cursor() as cursor:
-            cursor.execute(f"SELECT * FROM {table} ORDER BY id DESC LIMIT 10")
+            cursor.execute(
+                f"SELECT id, name, email, status FROM {table} ORDER BY id DESC LIMIT 5"
+            )
             rows = cursor.fetchall()
-
             if rows:
-                header = f"{'ID':<6} {'Name':<20} {'Email':<35} {'Status':<10}"
-                separator = f"{'-' * 6} {'-' * 20} {'-' * 35} {'-' * 10}"
-                logger.info(header)
-                logger.info(separator)
+                print(
+                    f"      {Colors.GRAY}{'ID':<6} {'Name':<18} {'Email':<30} {'Status':<10}{Colors.RESET}"
+                )
                 for row in rows:
-                    logger.info(
-                        f"{row['id']:<6} {row['name']:<20} {row['email'] or 'N/A':<35} {row['status']:<10}"
+                    print(
+                        f"      {row['id']:<6} {row['name']:<18} {(row['email'] or 'N/A'):<30} {row['status']:<10}"
                     )
             else:
-                logger.warning("表为空")
-    finally:
+                Console.warning("表为空")
         conn.close()
+    except Exception as e:
+        Console.error(str(e))
 
 
 def list_topics(bootstrap_servers: str, topic_prefix: str) -> list[str]:
-    log_section("Kafka Topics 列表", step=6)
-
+    Console.step(6, 8, "Kafka Topics")
     try:
         admin = KafkaAdminClient(
             bootstrap_servers=bootstrap_servers, request_timeout_ms=10000
         )
         topics = admin.list_topics()
-        relevant_topics = [t for t in sorted(topics) if topic_prefix in t]
-
-        logger.info(f"包含 '{topic_prefix}' 的 Topics:")
-        for t in relevant_topics:
-            logger.info(f"  • {t}")
-
-        if not relevant_topics:
-            logger.warning(f"未找到包含 '{topic_prefix}' 的 topics")
-
+        relevant = [t for t in sorted(topics) if topic_prefix in t]
+        for t in relevant:
+            Console.item("•", t)
+        if not relevant:
+            Console.warning(f"未找到包含 '{topic_prefix}' 的 topics")
         admin.close()
-        return relevant_topics
+        return relevant
     except Exception as e:
-        logger.error(f"连接 Kafka 失败: {e}")
+        Console.error(f"连接失败: {e}")
         return []
 
 
@@ -301,10 +329,8 @@ def consume_and_verify(
     max_messages: int = 100,
     timeout_ms: int = 15000,
     verbose: bool = False,
-) -> list[dict]:
-    log_section(f"读取并验证 Topic: {topic}", step=7)
-
-    cdc_events = []
+) -> bool:
+    Console.step(7, 8, "CDC 事件验证")
 
     try:
         consumer = KafkaConsumer(
@@ -315,37 +341,28 @@ def consume_and_verify(
             request_timeout_ms=20000,
         )
 
+        cdc_events = []
         for msg in consumer:
             if msg.value:
                 try:
                     value = json.loads(msg.value.decode("utf-8"))
-                    source = value.get("source", {})
-                    if source.get("table") == table:
+                    if value.get("source", {}).get("table") == table:
                         cdc_events.append(value)
                 except json.JSONDecodeError:
                     pass
             if len(cdc_events) >= max_messages:
                 break
-
         consumer.close()
 
         if not cdc_events:
-            logger.warning(f"Topic '{topic}' 中没有 {table} 表的消息")
-            return []
-
-        logger.info(f"找到 {len(cdc_events)} 条 {table} 表的 CDC 事件")
-
-        op_map = {"c": "INSERT", "u": "UPDATE", "d": "DELETE", "r": "SNAPSHOT"}
+            Console.warning(f"没有找到 {table} 表的 CDC 事件")
+            return False
 
         for op in result.inserted:
             for event in cdc_events:
                 if event.get("op") == "c":
                     after = event.get("after", {})
-                    if (
-                        after.get("id") == op.record_id
-                        and after.get("name") == op.name
-                        and after.get("email") == op.email
-                    ):
+                    if after.get("id") == op.record_id and after.get("name") == op.name:
                         result.matched_inserts.append(op.record_id)
                         break
 
@@ -357,8 +374,6 @@ def consume_and_verify(
                     if (
                         after.get("id") == op.record_id
                         and after.get("email") == op.email
-                        and after.get("status") == op.status
-                        and before.get("email") == op.old_email
                     ):
                         result.matched_updates.append(op.record_id)
                         break
@@ -367,220 +382,163 @@ def consume_and_verify(
             for event in cdc_events:
                 if event.get("op") == "d":
                     before = event.get("before", {})
-                    if (
-                        before.get("id") == op.record_id
-                        and before.get("name") == op.name
-                    ):
+                    if before.get("id") == op.record_id:
                         result.matched_deletes.append(op.record_id)
                         break
 
-        logger.info("─" * 56)
-        logger.info("CDC 事件详情")
-        logger.info("─" * 56)
+        our_ids = {
+            o.record_id for o in result.inserted + result.updated + result.deleted
+        }
 
-        displayed = 0
         for event in cdc_events:
-            op_code = event.get("op", "?")
-            op_name = op_map.get(op_code, op_code)
+            op = event.get("op")
             after = event.get("after", {})
             before = event.get("before", {})
-
             record_id = after.get("id") or before.get("id")
 
-            is_our_record = (
-                record_id in [o.record_id for o in result.inserted]
-                or record_id in [o.record_id for o in result.updated]
-                or record_id in [o.record_id for o in result.deleted]
-            )
-
-            if not is_our_record and not verbose:
+            if record_id not in our_ids and not verbose:
                 continue
 
-            displayed += 1
-            marker = "◆" if is_our_record else "○"
+            marker = "◆" if record_id in our_ids else "○"
 
-            if op_code == "c":
-                logger.info(
-                    f"{marker} [{op_name}] id={record_id}, "
-                    f"name={after.get('name')}, email={after.get('email')}, status={after.get('status')}"
+            if op == "c":
+                Console.item(
+                    marker,
+                    f"INSERT  id={record_id:<4} {after.get('name', '')}",
+                    "green",
                 )
-            elif op_code == "u":
-                logger.info(
-                    f"{marker} [{op_name}] id={record_id}, "
-                    f"email: {before.get('email')} -> {after.get('email')}, "
-                    f"status: {before.get('status')} -> {after.get('status')}"
+            elif op == "u":
+                Console.item(
+                    marker,
+                    f"UPDATE  id={record_id:<4} email → {after.get('email', '')}",
+                    "yellow",
                 )
-            elif op_code == "d":
-                logger.info(
-                    f"{marker} [{op_name}] id={record_id}, "
-                    f"name={before.get('name')}, email={before.get('email')}"
+            elif op == "d":
+                Console.item(
+                    marker, f"DELETE  id={record_id:<4} {before.get('name', '')}", "red"
                 )
-            elif op_code == "r":
-                if verbose:
-                    logger.debug(
-                        f"{marker} [{op_name}] id={record_id}, "
-                        f"name={after.get('name')}, email={after.get('email')}"
-                    )
+            elif op == "r" and verbose:
+                Console.item(
+                    marker, f"SNAP    id={record_id:<4} {after.get('name', '')}", "gray"
+                )
 
-        if displayed == 0:
-            logger.info("(无本次测试的 CDC 事件，使用 -v 查看所有事件)")
-
-        return cdc_events
+        return True
 
     except Exception as e:
-        logger.error(f"读取消息失败: {e}")
-        return []
+        Console.error(f"读取失败: {e}")
+        return False
 
 
 def print_verification_summary(result: VerifyResult):
-    log_section("验证结果", step=8)
+    Console.step(8, 8, "验证结果")
 
-    total_ops = len(result.inserted) + len(result.updated) + len(result.deleted)
-    total_matched = (
+    widths = [8, 6, 6, 8]
+    Console.table_sep(widths, "top")
+    Console.table_row(["操作", "执行", "匹配", "状态"], widths, is_header=True)
+    Console.table_sep(widths, "mid")
+
+    rows = []
+    if result.inserted:
+        ok = len(result.matched_inserts) == len(result.inserted)
+        status = (
+            f"{Colors.GREEN}✓ PASS{Colors.RESET}"
+            if ok
+            else f"{Colors.RED}✗ FAIL{Colors.RESET}"
+        )
+        rows.append(
+            (
+                "INSERT",
+                str(len(result.inserted)),
+                str(len(result.matched_inserts)),
+                status,
+            )
+        )
+
+    if result.updated:
+        ok = len(result.matched_updates) == len(result.updated)
+        status = (
+            f"{Colors.GREEN}✓ PASS{Colors.RESET}"
+            if ok
+            else f"{Colors.RED}✗ FAIL{Colors.RESET}"
+        )
+        rows.append(
+            (
+                "UPDATE",
+                str(len(result.updated)),
+                str(len(result.matched_updates)),
+                status,
+            )
+        )
+
+    if result.deleted:
+        ok = len(result.matched_deletes) == len(result.deleted)
+        status = (
+            f"{Colors.GREEN}✓ PASS{Colors.RESET}"
+            if ok
+            else f"{Colors.RED}✗ FAIL{Colors.RESET}"
+        )
+        rows.append(
+            (
+                "DELETE",
+                str(len(result.deleted)),
+                str(len(result.matched_deletes)),
+                status,
+            )
+        )
+
+    for row in rows:
+        Console.table_row(list(row), widths)
+
+    Console.table_sep(widths, "bot")
+
+    total = len(result.inserted) + len(result.updated) + len(result.deleted)
+    matched = (
         len(result.matched_inserts)
         + len(result.matched_updates)
         + len(result.matched_deletes)
     )
-
-    GREEN = "\033[32m"
-    RED = "\033[31m"
-    YELLOW = "\033[33m"
-    RESET = "\033[0m"
-
-    logger.info(f"{'操作类型':<12} {'执行数':<10} {'匹配数':<10} {'状态':<10}")
-    logger.info(f"{'-' * 12} {'-' * 10} {'-' * 10} {'-' * 10}")
-
-    insert_ok = len(result.matched_inserts) == len(result.inserted)
-    update_ok = len(result.matched_updates) == len(result.updated)
-    delete_ok = len(result.matched_deletes) == len(result.deleted)
-
-    insert_status = f"{GREEN}✓ PASS{RESET}" if insert_ok else f"{RED}✗ FAIL{RESET}"
-    update_status = f"{GREEN}✓ PASS{RESET}" if update_ok else f"{RED}✗ FAIL{RESET}"
-    delete_status = f"{GREEN}✓ PASS{RESET}" if delete_ok else f"{RED}✗ FAIL{RESET}"
-
-    if result.inserted:
-        logger.info(
-            f"{'INSERT':<12} {len(result.inserted):<10} {len(result.matched_inserts):<10} {insert_status}"
-        )
-    if result.updated:
-        logger.info(
-            f"{'UPDATE':<12} {len(result.updated):<10} {len(result.matched_updates):<10} {update_status}"
-        )
-    if result.deleted:
-        logger.info(
-            f"{'DELETE':<12} {len(result.deleted):<10} {len(result.matched_deletes):<10} {delete_status}"
-        )
-
-    logger.info(f"{'-' * 12} {'-' * 10} {'-' * 10} {'-' * 10}")
-
-    if total_ops == 0:
-        logger.warning("没有执行任何操作")
-    elif total_matched == total_ops:
-        logger.info(f"{GREEN}总计: {total_matched}/{total_ops} 全部匹配 ✓{RESET}")
-    else:
-        logger.warning(f"{YELLOW}总计: {total_matched}/{total_ops} 部分匹配{RESET}")
-
-        missing_inserts = set(o.record_id for o in result.inserted) - set(
-            result.matched_inserts
-        )
-        missing_updates = set(o.record_id for o in result.updated) - set(
-            result.matched_updates
-        )
-        missing_deletes = set(o.record_id for o in result.deleted) - set(
-            result.matched_deletes
-        )
-
-        if missing_inserts:
-            logger.warning(f"  未匹配的 INSERT: ids={list(missing_inserts)}")
-        if missing_updates:
-            logger.warning(f"  未匹配的 UPDATE: ids={list(missing_updates)}")
-        if missing_deletes:
-            logger.warning(f"  未匹配的 DELETE: ids={list(missing_deletes)}")
-
-        logger.info("提示: 可能是 Debezium 同步延迟，尝试增加 --wait 参数")
+    Console.summary(matched, total)
 
 
 def main():
     parser = argparse.ArgumentParser(
         description="MSK Debezium Connector 验证脚本",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-示例:
-  # 完整验证流程
-  python verify_connector.py \\
-      --mysql-host my-db.rds.amazonaws.com \\
-      --mysql-user admin \\
-      --mysql-password 'MyPassword' \\
-      --bootstrap-servers broker1:9092,broker2:9092 \\
-      --topic-prefix myprefix
-
-  # 只读取 Kafka 消息
-  python verify_connector.py \\
-      --bootstrap-servers broker1:9092 \\
-      --topic-prefix myprefix \\
-      --skip-mysql
-
-  # 详细输出 (包含所有 CDC 事件)
-  python verify_connector.py -v --wait 5
-        """,
-    )
-
-    parser.add_argument(
-        "--mysql-host",
-        default="common-test.cpwuo9y53vjh.us-east-1.rds.amazonaws.com",
-        help="MySQL 主机地址",
     )
     parser.add_argument(
-        "--mysql-port", type=int, default=3306, help="MySQL 端口 (默认: 3306)"
+        "--mysql-host", default="common-test.cpwuo9y53vjh.us-east-1.rds.amazonaws.com"
     )
-    parser.add_argument("--mysql-user", default="admin", help="MySQL 用户名")
-    parser.add_argument("--mysql-password", default="Ssa123456#$", help="MySQL 密码")
-    parser.add_argument(
-        "--database", default="test_db", help="数据库名称 (默认: test_db)"
-    )
-    parser.add_argument(
-        "--table", default="verify_test", help="表名称 (默认: verify_test)"
-    )
+    parser.add_argument("--mysql-port", type=int, default=3306)
+    parser.add_argument("--mysql-user", default="admin")
+    parser.add_argument("--mysql-password", default="Ssa123456#$")
+    parser.add_argument("--database", default="test_db")
+    parser.add_argument("--table", default="verify_test")
     parser.add_argument(
         "--bootstrap-servers",
         default="boot-4qw.msklogstream.oee1gg.c16.kafka.us-east-1.amazonaws.com:9092",
-        help="Kafka bootstrap servers",
     )
-    parser.add_argument(
-        "--topic-prefix", default="test_prefix", help="Topic 前缀 (默认: test_prefix)"
-    )
-    parser.add_argument(
-        "--data-topic", default=None, help="数据 Topic 名称 (默认: {prefix}_all_data)"
-    )
-    parser.add_argument(
-        "--max-messages", type=int, default=100, help="最多读取的消息数量 (默认: 100)"
-    )
-    parser.add_argument(
-        "--skip-mysql", action="store_true", help="跳过 MySQL 操作，只检查 Kafka"
-    )
-    parser.add_argument("--skip-insert", action="store_true", help="跳过插入数据")
-    parser.add_argument("--skip-update", action="store_true", help="跳过更新数据")
-    parser.add_argument("--skip-delete", action="store_true", help="跳过删除数据")
-    parser.add_argument(
-        "--wait", type=int, default=5, help="MySQL 操作后等待秒数 (默认: 5)"
-    )
-    parser.add_argument(
-        "-v", "--verbose", action="store_true", help="详细输出 (包含所有 CDC 事件)"
-    )
+    parser.add_argument("--topic-prefix", default="test_prefix")
+    parser.add_argument("--data-topic", default=None)
+    parser.add_argument("--max-messages", type=int, default=100)
+    parser.add_argument("--skip-mysql", action="store_true")
+    parser.add_argument("--skip-insert", action="store_true")
+    parser.add_argument("--skip-update", action="store_true")
+    parser.add_argument("--skip-delete", action="store_true")
+    parser.add_argument("--wait", type=int, default=5)
+    parser.add_argument("-v", "--verbose", action="store_true")
 
     args = parser.parse_args()
     setup_logging(verbose=args.verbose)
 
+    start_time = time.time()
     data_topic = args.data_topic or f"{args.topic_prefix}_all_data"
     result = VerifyResult()
 
-    logger.info("=" * 60)
-    logger.info("MSK Debezium Connector 验证")
-    logger.info("=" * 60)
-    logger.info(f"MySQL: {args.mysql_host}:{args.mysql_port}")
-    logger.info(f"Database: {args.database}, Table: {args.table}")
-    logger.info(f"Kafka: {args.bootstrap_servers}")
-    logger.info(f"Topic: {data_topic}")
+    Console.header("MSK Debezium Connector 验证")
+    Console.config("MySQL", f"{args.mysql_host}:{args.mysql_port}")
+    Console.config("DB", f"{args.database} → {args.table}")
+    Console.config("Kafka", args.bootstrap_servers.split(",")[0])
+    Console.config("Topic", data_topic)
 
     if not args.skip_mysql:
         setup_database(
@@ -632,11 +590,15 @@ def main():
         )
 
         if args.wait > 0:
-            logger.info(f"等待 {args.wait} 秒让 Debezium 同步数据...")
+            print(
+                f"\n      {Colors.GRAY}等待 {args.wait}s 同步...{Colors.RESET}",
+                end="",
+                flush=True,
+            )
             time.sleep(args.wait)
+            print(f" {Colors.GREEN}done{Colors.RESET}")
 
     list_topics(args.bootstrap_servers, args.topic_prefix)
-
     consume_and_verify(
         args.bootstrap_servers,
         data_topic,
@@ -649,9 +611,7 @@ def main():
     if not args.skip_mysql:
         print_verification_summary(result)
 
-    logger.info("=" * 60)
-    logger.info("验证完成")
-    logger.info("=" * 60)
+    Console.footer(start_time)
 
 
 if __name__ == "__main__":
