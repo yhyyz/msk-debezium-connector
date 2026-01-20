@@ -1,0 +1,12 @@
+[project]
+name = "msk-debezium-connector"
+version = "1.0.0"
+description = "MSK Debezium MySQL Connector Management Tool"
+requires-python = ">=3.12"
+dependencies = [
+    "boto3>=1.42.0",
+    "requests>=2.32.0",
+]
+
+[project.scripts]
+msk-connector = "msk_debezium_connector:main"
