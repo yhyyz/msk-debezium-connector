@@ -142,9 +142,15 @@ def get_mysql_connection(
 
 
 def setup_database(
-    host: str, port: int, user: str, password: str, database: str, table: str
+    host: str,
+    port: int,
+    user: str,
+    password: str,
+    database: str,
+    table: str,
+    total_steps: int,
 ) -> bool:
-    Console.step(1, 8, "创建数据库和表")
+    Console.step(1, total_steps, "创建数据库和表")
     try:
         conn = get_mysql_connection(host, port, user, password)
         with conn.cursor() as cursor:
@@ -171,9 +177,15 @@ def setup_database(
 
 
 def insert_test_data(
-    host: str, port: int, user: str, password: str, database: str, table: str
+    host: str,
+    port: int,
+    user: str,
+    password: str,
+    database: str,
+    table: str,
+    total_steps: int,
 ) -> list[Operation]:
-    Console.step(2, 8, "插入测试数据")
+    Console.step(2, total_steps, "插入测试数据")
     operations = []
     try:
         conn = get_mysql_connection(host, port, user, password, database)
@@ -202,9 +214,15 @@ def insert_test_data(
 
 
 def update_test_data(
-    host: str, port: int, user: str, password: str, database: str, table: str
+    host: str,
+    port: int,
+    user: str,
+    password: str,
+    database: str,
+    table: str,
+    total_steps: int,
 ) -> list[Operation]:
-    Console.step(3, 8, "更新测试数据")
+    Console.step(3, total_steps, "更新测试数据")
     operations = []
     try:
         conn = get_mysql_connection(host, port, user, password, database)
@@ -246,9 +264,15 @@ def update_test_data(
 
 
 def delete_test_data(
-    host: str, port: int, user: str, password: str, database: str, table: str
+    host: str,
+    port: int,
+    user: str,
+    password: str,
+    database: str,
+    table: str,
+    total_steps: int,
 ) -> list[Operation]:
-    Console.step(4, 8, "删除测试数据")
+    Console.step(4, total_steps, "删除测试数据")
     operations = []
     try:
         conn = get_mysql_connection(host, port, user, password, database)
@@ -277,9 +301,15 @@ def delete_test_data(
 
 
 def show_current_data(
-    host: str, port: int, user: str, password: str, database: str, table: str
+    host: str,
+    port: int,
+    user: str,
+    password: str,
+    database: str,
+    table: str,
+    total_steps: int,
 ):
-    Console.step(5, 8, "当前表数据")
+    Console.step(5, total_steps, "当前表数据")
     try:
         conn = get_mysql_connection(host, port, user, password, database)
         with conn.cursor() as cursor:
@@ -302,8 +332,10 @@ def show_current_data(
         Console.error(str(e))
 
 
-def list_topics(bootstrap_servers: str, topic_prefix: str) -> list[str]:
-    Console.step(6, 8, "Kafka Topics")
+def list_topics(
+    bootstrap_servers: str, topic_prefix: str, step_num: int, total_steps: int
+) -> list[str]:
+    Console.step(step_num, total_steps, "Kafka Topics")
     try:
         admin = KafkaAdminClient(
             bootstrap_servers=bootstrap_servers, request_timeout_ms=10000
@@ -326,11 +358,13 @@ def consume_and_verify(
     topic: str,
     result: VerifyResult,
     table: str,
+    step_num: int,
+    total_steps: int,
     max_messages: int = 100,
     timeout_ms: int = 15000,
     verbose: bool = False,
 ) -> bool:
-    Console.step(7, 8, "CDC 事件验证")
+    Console.step(step_num, total_steps, "CDC 事件验证")
 
     try:
         consumer = KafkaConsumer(
@@ -370,7 +404,6 @@ def consume_and_verify(
             for event in cdc_events:
                 if event.get("op") == "u":
                     after = event.get("after", {})
-                    before = event.get("before", {})
                     if (
                         after.get("id") == op.record_id
                         and after.get("email") == op.email
@@ -429,8 +462,8 @@ def consume_and_verify(
         return False
 
 
-def print_verification_summary(result: VerifyResult):
-    Console.step(8, 8, "验证结果")
+def print_verification_summary(result: VerifyResult, step_num: int, total_steps: int):
+    Console.step(step_num, total_steps, "验证结果")
 
     widths = [8, 6, 6, 8]
     Console.table_sep(widths, "top")
@@ -520,7 +553,12 @@ def main():
     parser.add_argument("--topic-prefix", default="test_prefix")
     parser.add_argument("--data-topic", default=None)
     parser.add_argument("--max-messages", type=int, default=100)
-    parser.add_argument("--skip-mysql", action="store_true")
+    parser.add_argument(
+        "--skip-mysql", action="store_true", help="跳过 MySQL 操作，只检查 Kafka"
+    )
+    parser.add_argument(
+        "--mysql-only", action="store_true", help="只执行 MySQL 操作，跳过 Kafka 验证"
+    )
     parser.add_argument("--skip-insert", action="store_true")
     parser.add_argument("--skip-update", action="store_true")
     parser.add_argument("--skip-delete", action="store_true")
@@ -534,11 +572,19 @@ def main():
     data_topic = args.data_topic or f"{args.topic_prefix}_all_data"
     result = VerifyResult()
 
+    total_steps = 5 if args.mysql_only else 8
+
     Console.header("MSK Debezium Connector 验证")
     Console.config("MySQL", f"{args.mysql_host}:{args.mysql_port}")
     Console.config("DB", f"{args.database} → {args.table}")
-    Console.config("Kafka", args.bootstrap_servers.split(",")[0])
-    Console.config("Topic", data_topic)
+
+    if not args.mysql_only:
+        Console.config("Kafka", args.bootstrap_servers.split(",")[0])
+        Console.config("Topic", data_topic)
+    else:
+        Console.config(
+            "Mode", f"{Colors.YELLOW}MySQL only (跳过 Kafka 验证){Colors.RESET}"
+        )
 
     if not args.skip_mysql:
         setup_database(
@@ -548,6 +594,7 @@ def main():
             args.mysql_password,
             args.database,
             args.table,
+            total_steps,
         )
 
         if not args.skip_insert:
@@ -558,6 +605,7 @@ def main():
                 args.mysql_password,
                 args.database,
                 args.table,
+                total_steps,
             )
 
         if not args.skip_update:
@@ -568,6 +616,7 @@ def main():
                 args.mysql_password,
                 args.database,
                 args.table,
+                total_steps,
             )
 
         if not args.skip_delete:
@@ -578,6 +627,7 @@ def main():
                 args.mysql_password,
                 args.database,
                 args.table,
+                total_steps,
             )
 
         show_current_data(
@@ -587,9 +637,10 @@ def main():
             args.mysql_password,
             args.database,
             args.table,
+            total_steps,
         )
 
-        if args.wait > 0:
+        if not args.mysql_only and args.wait > 0:
             print(
                 f"\n      {Colors.GRAY}等待 {args.wait}s 同步...{Colors.RESET}",
                 end="",
@@ -598,18 +649,21 @@ def main():
             time.sleep(args.wait)
             print(f" {Colors.GREEN}done{Colors.RESET}")
 
-    list_topics(args.bootstrap_servers, args.topic_prefix)
-    consume_and_verify(
-        args.bootstrap_servers,
-        data_topic,
-        result,
-        args.table,
-        args.max_messages,
-        verbose=args.verbose,
-    )
+    if not args.mysql_only:
+        list_topics(args.bootstrap_servers, args.topic_prefix, 6, total_steps)
+        consume_and_verify(
+            args.bootstrap_servers,
+            data_topic,
+            result,
+            args.table,
+            7,
+            total_steps,
+            args.max_messages,
+            verbose=args.verbose,
+        )
 
-    if not args.skip_mysql:
-        print_verification_summary(result)
+        if not args.skip_mysql:
+            print_verification_summary(result, 8, total_steps)
 
     Console.footer(start_time)
 

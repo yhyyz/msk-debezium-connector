@@ -245,7 +245,8 @@ python verify_connector.py -v --max-messages 20
 | `--topic-prefix` | - | Topic 前缀 |
 | `--data-topic` | `{prefix}_all_data` | 数据 Topic 名称 |
 | `--max-messages` | 100 | 最多读取的消息数量 |
-| `--skip-mysql` | - | 跳过 MySQL 操作 |
+| `--skip-mysql` | - | 跳过 MySQL 操作，只检查 Kafka |
+| `--mysql-only` | - | 只执行 MySQL 操作，跳过 Kafka 验证 |
 | `--skip-insert` | - | 跳过插入数据 |
 | `--skip-update` | - | 跳过更新数据 |
 | `--skip-delete` | - | 跳过删除数据 |
